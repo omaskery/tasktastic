@@ -2,17 +2,19 @@ import datetime
 import os
 import signal
 import tempfile
+import uuid
 
 import typing
 
-from aio_pika import ExchangeType
+from aio_pika import ExchangeType, Message
 from docker.models.containers import Container
 from dataclasses import dataclass
 import aio_pika
 import asyncio
 import docker
 
-from tasktastic.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, ExecutionResponseSchema
+from tasktastic.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, ExecutionResponseSchema, \
+    NodeHeartbeatSchema, NodeHeartbeat
 
 
 @dataclass(frozen=True)
@@ -21,8 +23,25 @@ class NodeArguments:
     loop: asyncio.AbstractEventLoop
 
 
+@dataclass(frozen=True)
+class NodeDetails:
+    node_id: uuid.UUID
+    tags: typing.Dict[str, str]
+
+    @staticmethod
+    def generate_with_tags(**tags):
+        return NodeDetails(
+            node_id=uuid.uuid4(),
+            tags=tags,
+        )
+
+
 async def main(args: NodeArguments) -> int:
     print(f"node invoked with args: {args}")
+
+    node_details = NodeDetails.generate_with_tags(
+        coolness="off the charts"
+    )
 
     docker_client = docker.from_env()
     print("checking connection to docker host...")
@@ -34,58 +53,90 @@ async def main(args: NodeArguments) -> int:
         args.orchestrator_uri,
         loop=args.loop
     )
+    print("connected to message broker, awaiting messages")
 
     shutdown_requested = args.loop.create_future()
     args.loop.add_signal_handler(signal.SIGINT, lambda: shutdown_requested.set_result(True))
 
-    execution_request_task = asyncio.create_task(
-        process_execution_requests(connection, docker_client)
-    )
+    async with connection:
+        background_tasks = [
+            ('execution request receiver', asyncio.create_task(
+                process_execution_requests(connection, docker_client)
+            )),
+            ('heartbeat transmitter', asyncio.create_task(
+                node_heartbeat(connection, node_details)
+            ))
+        ]
 
-    print("awaiting shutdown request...")
-    await shutdown_requested
-    print("shutdown requested!")
+        print("running until interrupted...")
+        await shutdown_requested
+        print("shutdown requested!")
 
-    print("waiting for execution request receiver to terminate...")
-    execution_request_task.cancel()
-    try:
-        await execution_request_task
-    except asyncio.CancelledError:
-        pass
+        print("cancelling background tasks...")
+        for task_name, task in background_tasks:
+            print(f" - {task_name}")
+            task.cancel()
+        print("awaiting background task termination...")
+        for task_name, task in background_tasks:
+            print(f" - {task_name}")
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
     print("exiting")
     return 0
 
 
+async def node_heartbeat(connection: aio_pika.Connection, node_details: NodeDetails):
+    print("establishing heartbeat channel...")
+    channel = await connection.channel()
+
+    heartbeat_exchange = await channel.declare_exchange('tasktastic.node.heartbeat', ExchangeType.FANOUT)
+
+    print("node heartbeat running...")
+    while True:
+        heartbeat_json = NodeHeartbeatSchema().dumps(NodeHeartbeat(
+            node_id=str(node_details.node_id),
+            timestamp=datetime.datetime.utcnow(),
+            tags=node_details.tags
+        ))
+        message = aio_pika.Message(
+            heartbeat_json.encode(),
+            content_type='application/json'
+        )
+        await heartbeat_exchange.publish(message, routing_key='')
+        await asyncio.sleep(10.0)
+
+
 async def process_execution_requests(connection: aio_pika.Connection, docker_client: docker.DockerClient):
-    print("connected to message broker, awaiting messages")
+    print("establishing execution request channel...")
+    channel = await connection.channel()
+    await channel.set_qos(prefetch_count=1)
 
-    async with connection:
-        channel = await connection.channel()
-        await channel.set_qos(prefetch_count=1)
+    queue = await channel.declare_queue(exclusive=True)
+    response_exchange = await channel.declare_exchange('tasktastic.execution.outcome', ExchangeType.FANOUT)
 
-        queue = await channel.declare_queue(exclusive=True)
-        response_exchange = await channel.declare_exchange('tasktastic.execution.outcome', ExchangeType.FANOUT)
+    print("awaiting execution requests...")
+    async with queue.iterator() as incoming_messages:
+        async for message in incoming_messages:
+            message: aio_pika.IncomingMessage = message
 
-        async with queue.iterator() as incoming_messages:
-            async for message in incoming_messages:
-                message: aio_pika.IncomingMessage = message
+            try:
+                async with message.process():
+                    response = await handle_incoming_request(docker_client, message)
+            except Exception as ex:
+                print(f"exception processing request: {type(ex).__name__} - {ex}")
+                response = ExecutionResponse(
+                    None,
+                    None,
+                    None,
+                    f"exception processing request: {type(ex).__name__} - {ex}",
+                    None,
+                    {}
+                )
 
-                try:
-                    async with message.process():
-                        response = await handle_incoming_request(docker_client, message)
-                except Exception as ex:
-                    print(f"exception processing request: {type(ex).__name__} - {ex}")
-                    response = ExecutionResponse(
-                        None,
-                        None,
-                        None,
-                        f"exception processing request: {type(ex).__name__} - {ex}",
-                        None,
-                        {}
-                    )
-
-                await submit_response(response, response_exchange)
+            await submit_response(response, response_exchange)
 
 
 async def handle_incoming_request(client: docker.DockerClient, message: aio_pika.IncomingMessage) -> ExecutionResponse:

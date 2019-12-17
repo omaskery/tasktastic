@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import aio_pika
 import asyncio
 
-from tasktastic.schemas import ExecutionResponseSchema, ExecutionResponse
+from tasktastic.schemas import ExecutionResponseSchema, ExecutionResponse, NodeHeartbeatSchema, NodeHeartbeat
 
 
 @dataclass(frozen=True)
@@ -27,11 +27,8 @@ async def main(args: OrchestratorArguments) -> int:
     async with connection:
         channel = await connection.channel()
 
-        response_exchange = await channel.declare_exchange('tasktastic.execution.outcome', ExchangeType.FANOUT)
-        queue = await channel.declare_queue()
-        await queue.bind(response_exchange)
-
-        await queue.consume(on_execution_outcome_received)
+        await start_receiving_execution_outcomes(channel)
+        await start_receiving_node_heartbeats(channel)
 
         exit_requested = args.loop.create_future()
         args.loop.add_signal_handler(signal.SIGINT, lambda: exit_requested.set_result(True))
@@ -40,6 +37,25 @@ async def main(args: OrchestratorArguments) -> int:
         print("exit requested")
 
     return 0
+
+
+async def start_receiving_node_heartbeats(channel):
+    response_exchange = await channel.declare_exchange('tasktastic.node.heartbeat', ExchangeType.FANOUT)
+    queue = await channel.declare_queue(exclusive=True)
+    await queue.bind(response_exchange)
+    await queue.consume(on_node_heartbeat_received)
+
+
+async def start_receiving_execution_outcomes(channel):
+    response_exchange = await channel.declare_exchange('tasktastic.execution.outcome', ExchangeType.FANOUT)
+    queue = await channel.declare_queue(exclusive=True)
+    await queue.bind(response_exchange)
+    await queue.consume(on_execution_outcome_received)
+
+
+async def on_node_heartbeat_received(message: IncomingMessage):
+    response: NodeHeartbeat = NodeHeartbeatSchema().loads(message.body)
+    print(f"node heartbeat: {response}")
 
 
 async def on_execution_outcome_received(message: IncomingMessage):

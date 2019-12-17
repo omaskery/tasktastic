@@ -1,3 +1,4 @@
+import datetime
 from dataclasses import dataclass, field
 import marshmallow_dataclass
 import marshmallow
@@ -47,5 +48,13 @@ class ExecutionResponse:
     ))
 
 
+@dataclass
+class NodeHeartbeat:
+    node_id: str = field()
+    timestamp: datetime.datetime = field()
+    tags: typing.Dict[str, str] = field()
+
+
 ExecutionRequestSchema = marshmallow_dataclass.class_schema(ExecutionRequest)
 ExecutionResponseSchema = marshmallow_dataclass.class_schema(ExecutionResponse)
+NodeHeartbeatSchema = marshmallow_dataclass.class_schema(NodeHeartbeat)
