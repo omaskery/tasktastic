@@ -1,5 +1,6 @@
 import datetime
 import os
+import signal
 import tempfile
 
 import typing
@@ -34,7 +35,31 @@ async def main(args: NodeArguments) -> int:
         loop=args.loop
     )
 
+    shutdown_requested = args.loop.create_future()
+    args.loop.add_signal_handler(signal.SIGINT, lambda: shutdown_requested.set_result(True))
+
+    execution_request_task = asyncio.create_task(
+        process_execution_requests(connection, docker_client)
+    )
+
+    print("awaiting shutdown request...")
+    await shutdown_requested
+    print("shutdown requested!")
+
+    print("waiting for execution request receiver to terminate...")
+    execution_request_task.cancel()
+    try:
+        await execution_request_task
+    except asyncio.CancelledError:
+        pass
+
+    print("exiting")
+    return 0
+
+
+async def process_execution_requests(connection: aio_pika.Connection, docker_client: docker.DockerClient):
     print("connected to message broker, awaiting messages")
+
     async with connection:
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)
@@ -61,8 +86,6 @@ async def main(args: NodeArguments) -> int:
                     )
 
                 await submit_response(response, response_exchange)
-
-    return 0
 
 
 async def handle_incoming_request(client: docker.DockerClient, message: aio_pika.IncomingMessage) -> ExecutionResponse:
@@ -152,7 +175,8 @@ async def submit_response(response: ExecutionResponse, exchange: aio_pika.Exchan
     print(f"  response: {response_json}")
 
 
-def _process_logs(container: Container, tag: str, stdout: bool, stderr: bool) -> typing.List[typing.Tuple[str, datetime.datetime, bytes]]:
+def _process_logs(container: Container, tag: str, stdout: bool, stderr: bool) -> typing.List[
+    typing.Tuple[str, datetime.datetime, bytes]]:
     def _process_line(line) -> typing.Tuple[str, datetime.datetime, bytes]:
         line = line.decode()
         timestamp, remainder = line.split(' ', maxsplit=1)
