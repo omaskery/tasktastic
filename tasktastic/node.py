@@ -54,7 +54,7 @@ async def main(args: NodeArguments) -> int:
         args.orchestrator_uri,
         loop=args.loop
     )
-    print("connected to message broker, awaiting messages")
+    print("connected to message broker")
 
     shutdown_requested = args.loop.create_future()
     args.loop.add_signal_handler(signal.SIGINT, lambda: shutdown_requested.set_result(True))

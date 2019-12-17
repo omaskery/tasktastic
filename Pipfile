@@ -10,6 +10,7 @@ aio-pika = "*"
 marshmallow-dataclass = "*"
 marshmallow = "*"
 docker = "*"
+aiohttp = "*"
 
 [requires]
 python_version = "3.7"

@@ -2,6 +2,7 @@ import datetime
 import signal
 
 import typing
+from aiohttp import web
 from aio_pika import ExchangeType, IncomingMessage
 from dataclasses import dataclass
 import aio_pika
@@ -39,11 +40,22 @@ async def main(args: OrchestratorArguments) -> int:
             await scheduler.start_receiving_node_heartbeats(channel)
         )
 
+        print("starting HTTP API...")
+        http_api = await create_http_api(scheduler)
+        runner = web.AppRunner(http_api)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', 5000)
+        await site.start()
+        print("HTTP API started")
+
         exit_requested = args.loop.create_future()
         args.loop.add_signal_handler(signal.SIGINT, lambda: exit_requested.set_result(True))
         print("waiting for exit to be requested...")
         await exit_requested
         print("exit requested")
+
+        print("stopping HTTP API...")
+        await runner.cleanup()
 
         print("cancelling background tasks...")
         try:
@@ -53,6 +65,28 @@ async def main(args: OrchestratorArguments) -> int:
 
     print("exiting")
     return 0
+
+
+async def create_http_api(scheduler: 'Scheduler') -> web.Application:
+    routes = web.RouteTableDef()
+
+    @routes.get("/api/nodes")
+    async def list_known_nodes(_request):
+        return web.json_response({
+            'nodes': [
+                {
+                    'node_id': node.node_id,
+                    'last_heartbeat': node.last_heartbeat.isoformat(),
+                    'tags': node.tags,
+                }
+                for node in scheduler.known_nodes.values()
+            ]
+        })
+
+    app = web.Application()
+    app.add_routes(routes)
+
+    return app
 
 
 @dataclass
