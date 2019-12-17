@@ -6,13 +6,14 @@ import uuid
 
 import typing
 
-from aio_pika import ExchangeType, Message
+from aio_pika import ExchangeType
 from docker.models.containers import Container
 from dataclasses import dataclass
 import aio_pika
 import asyncio
 import docker
 
+from tasktastic.rmq_entities import Exchanges
 from tasktastic.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, ExecutionResponseSchema, \
     NodeHeartbeatSchema, NodeHeartbeat
 
@@ -61,7 +62,7 @@ async def main(args: NodeArguments) -> int:
     async with connection:
         background_tasks = [
             ('execution request receiver', asyncio.create_task(
-                process_execution_requests(connection, docker_client)
+                process_execution_requests(connection, docker_client, node_details)
             )),
             ('heartbeat transmitter', asyncio.create_task(
                 node_heartbeat(connection, node_details)
@@ -92,7 +93,7 @@ async def node_heartbeat(connection: aio_pika.Connection, node_details: NodeDeta
     print("establishing heartbeat channel...")
     channel = await connection.channel()
 
-    heartbeat_exchange = await channel.declare_exchange('tasktastic.node.heartbeat', ExchangeType.FANOUT)
+    heartbeat_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat, ExchangeType.FANOUT)
 
     print("node heartbeat running...")
     while True:
@@ -109,16 +110,26 @@ async def node_heartbeat(connection: aio_pika.Connection, node_details: NodeDeta
         await asyncio.sleep(10.0)
 
 
-async def process_execution_requests(connection: aio_pika.Connection, docker_client: docker.DockerClient):
+async def process_execution_requests(connection: aio_pika.Connection, docker_client: docker.DockerClient, node_details: NodeDetails):
     print("establishing execution request channel...")
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=1)
 
-    queue = await channel.declare_queue(exclusive=True)
-    response_exchange = await channel.declare_exchange('tasktastic.execution.outcome', ExchangeType.FANOUT)
+    request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ, ExchangeType.FANOUT)
+    request_exchange = await channel.declare_exchange(Exchanges.ExecutionRequest, ExchangeType.FANOUT)
+    response_exchange = await channel.declare_exchange(Exchanges.ExecutionOutcome, ExchangeType.FANOUT)
+
+    request_queue_message_timeout = 60 * 1000
+    request_queue_timeout = int(request_queue_message_timeout * 2.5)
+    request_queue = await channel.declare_queue(arguments={
+        'x-message-ttl': request_queue_message_timeout,
+        'x-expires': request_queue_timeout,
+        'x-dead-letter-exchange': request_dlq_exchange.name,
+    })
+    await request_queue.bind(request_exchange.name, str(node_details.node_id))
 
     print("awaiting execution requests...")
-    async with queue.iterator() as incoming_messages:
+    async with request_queue.iterator() as incoming_messages:
         async for message in incoming_messages:
             message: aio_pika.IncomingMessage = message
 

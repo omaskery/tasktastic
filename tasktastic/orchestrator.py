@@ -7,7 +7,9 @@ from dataclasses import dataclass
 import aio_pika
 import asyncio
 
-from tasktastic.schemas import ExecutionResponseSchema, ExecutionResponse, NodeHeartbeatSchema, NodeHeartbeat
+from tasktastic.rmq_entities import Exchanges
+from tasktastic.schemas import ExecutionResponseSchema, ExecutionResponse, NodeHeartbeatSchema, NodeHeartbeat, \
+    ExecutionRequestSchema, ExecutionRequest
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,7 @@ async def main(args: OrchestratorArguments) -> int:
         channel = await connection.channel()
 
         await start_receiving_execution_outcomes(channel)
+        await start_receiving_execution_request_dlq(channel)
         background_tasks = asyncio.gather(
             await scheduler.start_receiving_node_heartbeats(channel)
         )
@@ -68,7 +71,7 @@ class Scheduler:
         self.loop = loop
 
     async def start_receiving_node_heartbeats(self, channel) -> asyncio.Future:
-        response_exchange = await channel.declare_exchange('tasktastic.node.heartbeat', ExchangeType.FANOUT)
+        response_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat, ExchangeType.FANOUT)
         queue = await channel.declare_queue(exclusive=True)
         await queue.bind(response_exchange)
         await queue.consume(self._on_node_heartbeat_received)
@@ -111,7 +114,7 @@ class Scheduler:
 
 
 async def start_receiving_execution_outcomes(channel):
-    response_exchange = await channel.declare_exchange('tasktastic.execution.outcome', ExchangeType.FANOUT)
+    response_exchange = await channel.declare_exchange(Exchanges.ExecutionOutcome, ExchangeType.FANOUT)
     queue = await channel.declare_queue(exclusive=True)
     await queue.bind(response_exchange)
     await queue.consume(on_execution_outcome_received)
@@ -132,3 +135,16 @@ async def on_execution_outcome_received(message: IncomingMessage):
                 print(f"  logs:")
                 for log_line in response.logs:
                     print(f"  - {log_line.strip()}")
+
+
+async def start_receiving_execution_request_dlq(channel):
+    request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ, ExchangeType.FANOUT)
+    queue = await channel.declare_queue(exclusive=True)
+    await queue.bind(request_dlq_exchange)
+    await queue.consume(on_execution_request_dlq_received)
+
+
+async def on_execution_request_dlq_received(message: IncomingMessage):
+    async with message.process():
+        request: ExecutionRequest = ExecutionRequestSchema().loads(message.body)
+        print(f"execution request for {message.routing_key} hit DLQ: {request}")
