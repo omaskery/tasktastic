@@ -95,18 +95,19 @@ class Scheduler:
             print(f"node {node.node_id} offline (last heartbeat: {node.last_heartbeat})")
 
     async def _on_node_heartbeat_received(self, message: IncomingMessage):
-        heartbeat: NodeHeartbeat = NodeHeartbeatSchema().loads(message.body)
+        async with message.process():
+            heartbeat: NodeHeartbeat = NodeHeartbeatSchema().loads(message.body)
 
-        node = KnownNode(
-            node_id=heartbeat.node_id,
-            last_heartbeat=heartbeat.timestamp,
-            tags=heartbeat.tags,
-        )
+            node = KnownNode(
+                node_id=heartbeat.node_id,
+                last_heartbeat=heartbeat.timestamp,
+                tags=heartbeat.tags,
+            )
 
-        if node.node_id not in self.known_nodes:
-            print(f"node {node.node_id} online (as of {node.last_heartbeat})")
+            if node.node_id not in self.known_nodes:
+                print(f"node {node.node_id} online (as of {node.last_heartbeat})")
 
-        self.known_nodes[node.node_id] = node
+            self.known_nodes[node.node_id] = node
 
 
 async def start_receiving_execution_outcomes(channel):
@@ -117,16 +118,17 @@ async def start_receiving_execution_outcomes(channel):
 
 
 async def on_execution_outcome_received(message: IncomingMessage):
-    response: ExecutionResponse = ExecutionResponseSchema().loads(message.body)
+    async with message.process():
+        response: ExecutionResponse = ExecutionResponseSchema().loads(message.body)
 
-    print(f"execution response: {response.request_id}")
-    if response.error:
-        print(f"  error: {response.error}")
-    else:
-        print(f"  status code: {response.exit_status}")
-        print(f"  exit error: {response.exit_error}")
+        print(f"execution response: {response.request_id}")
+        if response.error:
+            print(f"  error: {response.error}")
+        else:
+            print(f"  status code: {response.exit_status}")
+            print(f"  exit error: {response.exit_error}")
 
-        if response.logs:
-            print(f"  logs:")
-            for log_line in response.logs:
-                print(f"  - {log_line.strip()}")
+            if response.logs:
+                print(f"  logs:")
+                for log_line in response.logs:
+                    print(f"  - {log_line.strip()}")
