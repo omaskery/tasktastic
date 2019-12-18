@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import aio_pika
 import asyncio
 
-from tasktastic.rmq_entities import Exchanges
-from tasktastic.schemas import ExecutionResponseSchema, ExecutionResponse, NodeHeartbeatSchema, NodeHeartbeat, \
+from tasktastic.common.rmq_entities import Exchanges
+from tasktastic.common.schemas import ExecutionResponseSchema, ExecutionResponse, NodeHeartbeatSchema, NodeHeartbeat, \
     ExecutionRequestSchema, ExecutionRequest
 
 

@@ -13,8 +13,8 @@ import aio_pika
 import asyncio
 import docker
 
-from tasktastic.rmq_entities import Exchanges
-from tasktastic.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, ExecutionResponseSchema, \
+from tasktastic.common.rmq_entities import Exchanges
+from tasktastic.common.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, ExecutionResponseSchema, \
     NodeHeartbeatSchema, NodeHeartbeat
 
 
