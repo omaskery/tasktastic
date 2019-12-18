@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import aio_pika
 import asyncio
 import docker
+from requests import ReadTimeout, ConnectionError
 
 from tasktastic.common.rmq_entities import Exchanges
 from tasktastic.common.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, \
@@ -212,7 +213,22 @@ def handle_incoming_request(client: docker.DockerClient, message: aio_pika.Incom
                 ]
             else:
                 all_logs = None
+        except (ReadTimeout, ConnectionError):
+            print(f"  timed out while waiting")
+            return ExecutionResponse(
+                request_id=request.request_id,
+                exit_status=None,
+                exit_error=None,
+                error="timed out waiting for container to finish executing",
+                logs=None,
+                outputs={}
+            )
         finally:
+            print(f"  container status: {container.status}")
+            if container.status in ("running", "created"):
+                print("  waiting for container to stop gracefully")
+                container.stop(timeout=30)
+                print(f"  container stopped ({container.status})")
             print("  removing container...")
             container.remove(force=True)
             print("  container removed")
