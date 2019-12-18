@@ -26,7 +26,8 @@ class ExecutionRequest:
     inputs: typing.Dict[str, bytes] = field(default=dict, metadata=dict(
         marshmallow_field=marshmallow.fields.Dict(
             keys=marshmallow.fields.Str(),
-            values=Base64Bytes()
+            values=Base64Bytes(),
+            missing=dict
         )
     ))
     outputs: typing.List[str] = field(default=list)

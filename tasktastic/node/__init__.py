@@ -7,6 +7,7 @@ import uuid
 import typing
 
 from aio_pika import ExchangeType
+from docker.errors import ImageNotFound
 from docker.models.containers import Container
 from dataclasses import dataclass
 import aio_pika
@@ -14,7 +15,8 @@ import asyncio
 import docker
 
 from tasktastic.common.rmq_entities import Exchanges
-from tasktastic.common.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, ExecutionResponseSchema, \
+from tasktastic.common.schemas import ExecutionRequestSchema, ExecutionRequest, ExecutionResponse, \
+    ExecutionResponseSchema, \
     NodeHeartbeatSchema, NodeHeartbeat
 
 
@@ -62,7 +64,7 @@ async def main(args: NodeArguments) -> int:
     async with connection:
         background_tasks = [
             ('execution request receiver', asyncio.create_task(
-                process_execution_requests(connection, docker_client, node_details)
+                process_execution_requests(args.loop, connection, docker_client, node_details)
             )),
             ('heartbeat transmitter', asyncio.create_task(
                 node_heartbeat(connection, node_details)
@@ -110,7 +112,8 @@ async def node_heartbeat(connection: aio_pika.Connection, node_details: NodeDeta
         await asyncio.sleep(10.0)
 
 
-async def process_execution_requests(connection: aio_pika.Connection, docker_client: docker.DockerClient, node_details: NodeDetails):
+async def process_execution_requests(loop: asyncio.AbstractEventLoop, connection: aio_pika.Connection,
+                                     docker_client: docker.DockerClient, node_details: NodeDetails):
     print("establishing execution request channel...")
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=1)
@@ -135,7 +138,7 @@ async def process_execution_requests(connection: aio_pika.Connection, docker_cli
 
             try:
                 async with message.process():
-                    response = await handle_incoming_request(docker_client, message)
+                    response = await loop.run_in_executor(None, handle_incoming_request, docker_client, message)
             except Exception as ex:
                 print(f"exception processing request: {type(ex).__name__} - {ex}")
                 response = ExecutionResponse(
@@ -150,7 +153,7 @@ async def process_execution_requests(connection: aio_pika.Connection, docker_cli
             await submit_response(response, response_exchange)
 
 
-async def handle_incoming_request(client: docker.DockerClient, message: aio_pika.IncomingMessage) -> ExecutionResponse:
+def handle_incoming_request(client: docker.DockerClient, message: aio_pika.IncomingMessage) -> ExecutionResponse:
     print("received execution request:")
     request: ExecutionRequest = ExecutionRequestSchema().loads(message.body)
     print(f"  decoded: {request.request_id} - image: {request.image_name}")
@@ -175,11 +178,21 @@ async def handle_incoming_request(client: docker.DockerClient, message: aio_pika
             volumes = None
 
         print("  creating container...")
-        container: Container = client.containers.create(
-            request.image_name,
-            volumes=volumes,
-            detach=True
-        )
+        try:
+            container: Container = client.containers.create(
+                request.image_name,
+                volumes=volumes,
+                detach=True
+            )
+        except ImageNotFound:
+            return ExecutionResponse(
+                request_id=request.request_id,
+                exit_status=None,
+                exit_error=None,
+                error=f"no such image '{request.image_name}'",
+                logs=None,
+                outputs={}
+            )
         try:
             print("  starting container...")
             container.start()
@@ -201,7 +214,7 @@ async def handle_incoming_request(client: docker.DockerClient, message: aio_pika
                 all_logs = None
         finally:
             print("  removing container...")
-            container.remove()
+            container.remove(force=True)
             print("  container removed")
 
         outputs = {}
@@ -238,7 +251,8 @@ async def submit_response(response: ExecutionResponse, exchange: aio_pika.Exchan
 
 
 def _process_logs(container: Container, tag: str, stdout: bool, stderr: bool) -> typing.List[
-    typing.Tuple[str, datetime.datetime, bytes]]:
+        typing.Tuple[str, datetime.datetime, bytes]]:
+
     def _process_line(line) -> typing.Tuple[str, datetime.datetime, bytes]:
         line = line.decode()
         timestamp, remainder = line.split(' ', maxsplit=1)

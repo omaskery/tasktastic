@@ -1,19 +1,17 @@
-import datetime
 import signal
 
-import typing
+import marshmallow
 from aiohttp import web
-from aio_pika import ExchangeType, IncomingMessage
-from dataclasses import dataclass
+import dataclasses
 import aio_pika
 import asyncio
 
-from tasktastic.common.rmq_entities import Exchanges
-from tasktastic.common.schemas import ExecutionResponseSchema, ExecutionResponse, NodeHeartbeatSchema, NodeHeartbeat, \
-    ExecutionRequestSchema, ExecutionRequest
+from tasktastic.common.schemas import ExecutionResponseSchema
+from tasktastic.orchestrator import http_schemas
+from tasktastic.orchestrator.scheduler import Scheduler, SchedulingException
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class OrchestratorArguments:
     rabbitmq_uri: str
     loop: asyncio.AbstractEventLoop
@@ -34,11 +32,12 @@ async def main(args: OrchestratorArguments) -> int:
     async with connection:
         channel = await connection.channel()
 
-        await start_receiving_execution_outcomes(channel)
-        await start_receiving_execution_request_dlq(channel)
+        await scheduler.start_receiving_execution_outcomes(channel)
+        await scheduler.start_receiving_execution_request_dlq(channel)
         background_tasks = asyncio.gather(
             await scheduler.start_receiving_node_heartbeats(channel)
         )
+        await scheduler.enable_job_execution(channel)
 
         print("starting HTTP API...")
         http_api = await create_http_api(scheduler)
@@ -83,102 +82,26 @@ async def create_http_api(scheduler: 'Scheduler') -> web.Application:
             ]
         })
 
+    @routes.post("/api/execution-requests")
+    async def post_new_execution_request(request: web.Request):
+        execution_request_json = await request.json()
+        try:
+            execution_request = http_schemas.ExecutionRequestSchema().load(execution_request_json)
+        except marshmallow.ValidationError:
+            return web.Response(status=400, text="invalid execution request")
+
+        execution_response_future = await scheduler.submit_execution_request(execution_request)
+
+        try:
+            execution_response = await execution_response_future
+        except SchedulingException as e:
+            return web.Response(status=500, text=f"error performing execution request: {e}")
+
+        return web.json_response(ExecutionResponseSchema().dump(execution_response))
+
     app = web.Application()
     app.add_routes(routes)
 
     return app
 
 
-@dataclass
-class KnownNode:
-    node_id: str
-    last_heartbeat: datetime.datetime
-    tags: typing.Dict[str, str]
-
-    def time_since_heartbeat(self) -> datetime.timedelta:
-        return datetime.datetime.utcnow() - self.last_heartbeat
-
-
-class Scheduler:
-    def __init__(self, loop: asyncio.AbstractEventLoop):
-        self.known_nodes: typing.Dict[str, KnownNode] = {}
-        self.loop = loop
-
-    async def start_receiving_node_heartbeats(self, channel) -> asyncio.Future:
-        response_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat, ExchangeType.FANOUT)
-        queue = await channel.declare_queue(exclusive=True)
-        await queue.bind(response_exchange)
-        await queue.consume(self._on_node_heartbeat_received)
-
-        return asyncio.gather(
-            self._start_heartbeat_monitor()
-        )
-
-    async def _start_heartbeat_monitor(self):
-        check_period = 5.0
-        timeout_duration = datetime.timedelta(seconds=20)
-        while True:
-            self._time_out_nodes(timeout_duration)
-
-            await asyncio.sleep(check_period)
-
-    def _time_out_nodes(self, timeout_duration: datetime.timedelta):
-        timed_out = [
-            node for node in self.known_nodes.values()
-            if node.time_since_heartbeat() >= timeout_duration
-        ]
-        for node in timed_out:
-            del self.known_nodes[node.node_id]
-            print(f"node {node.node_id} offline (last heartbeat: {node.last_heartbeat})")
-
-    async def _on_node_heartbeat_received(self, message: IncomingMessage):
-        async with message.process():
-            heartbeat: NodeHeartbeat = NodeHeartbeatSchema().loads(message.body)
-
-            node = KnownNode(
-                node_id=heartbeat.node_id,
-                last_heartbeat=heartbeat.timestamp,
-                tags=heartbeat.tags,
-            )
-
-            if node.node_id not in self.known_nodes:
-                print(f"node {node.node_id} online (as of {node.last_heartbeat})")
-
-            self.known_nodes[node.node_id] = node
-
-
-async def start_receiving_execution_outcomes(channel):
-    response_exchange = await channel.declare_exchange(Exchanges.ExecutionOutcome, ExchangeType.FANOUT)
-    queue = await channel.declare_queue(exclusive=True)
-    await queue.bind(response_exchange)
-    await queue.consume(on_execution_outcome_received)
-
-
-async def on_execution_outcome_received(message: IncomingMessage):
-    async with message.process():
-        response: ExecutionResponse = ExecutionResponseSchema().loads(message.body)
-
-        print(f"execution response: {response.request_id}")
-        if response.error:
-            print(f"  error: {response.error}")
-        else:
-            print(f"  status code: {response.exit_status}")
-            print(f"  exit error: {response.exit_error}")
-
-            if response.logs:
-                print(f"  logs:")
-                for log_line in response.logs:
-                    print(f"  - {log_line.strip()}")
-
-
-async def start_receiving_execution_request_dlq(channel):
-    request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ, ExchangeType.FANOUT)
-    queue = await channel.declare_queue(exclusive=True)
-    await queue.bind(request_dlq_exchange)
-    await queue.consume(on_execution_request_dlq_received)
-
-
-async def on_execution_request_dlq_received(message: IncomingMessage):
-    async with message.process():
-        request: ExecutionRequest = ExecutionRequestSchema().loads(message.body)
-        print(f"execution request for {message.routing_key} hit DLQ: {request}")
