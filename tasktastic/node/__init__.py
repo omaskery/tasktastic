@@ -178,13 +178,10 @@ def handle_incoming_request(client: docker.DockerClient, message: aio_pika.Incom
             print("  io directory will not be mounted, as requested")
             volumes = None
 
-        print("  creating container...")
         try:
-            container: Container = client.containers.create(
-                request.image_name,
-                volumes=volumes,
-                detach=True
-            )
+            print("  ensuring image is available...")
+            client.images.pull(request.image_name, 'latest')
+            print("  image retrieved")
         except ImageNotFound:
             return ExecutionResponse(
                 request_id=request.request_id,
@@ -194,6 +191,13 @@ def handle_incoming_request(client: docker.DockerClient, message: aio_pika.Incom
                 logs=None,
                 outputs={}
             )
+
+        print("  creating container...")
+        container: Container = client.containers.create(
+            request.image_name,
+            volumes=volumes,
+            detach=True
+        )
         try:
             print("  starting container...")
             container.start()
