@@ -1,4 +1,5 @@
-
+from dataclasses import dataclass
+from aio_pika import ExchangeType
 
 ENTITY_PREFIX = "tasktastic"
 
@@ -11,8 +12,14 @@ def _remove_surrounding_dots(text: str) -> str:
     return text.strip('.')
 
 
+@dataclass
+class ExchangeDetails:
+    name: str
+    kind: ExchangeType
+
+
 class Exchanges:
-    NodeHeartbeat = _dotted(ENTITY_PREFIX, "node", "heartbeat")
-    ExecutionRequest = _dotted(ENTITY_PREFIX, "execution", "request")
-    ExecutionDLQ = _dotted(ENTITY_PREFIX, "execution", "dlq")
-    ExecutionOutcome = _dotted(ENTITY_PREFIX, "execution", "outcome")
+    NodeHeartbeat = ExchangeDetails(_dotted(ENTITY_PREFIX, "node", "heartbeat"), ExchangeType.FANOUT)
+    ExecutionRequest = ExchangeDetails(_dotted(ENTITY_PREFIX, "execution", "request"), ExchangeType.TOPIC)
+    ExecutionDLQ = ExchangeDetails(_dotted(ENTITY_PREFIX, "execution", "dlq"), ExchangeType.FANOUT)
+    ExecutionOutcome = ExchangeDetails(_dotted(ENTITY_PREFIX, "execution", "outcome"), ExchangeType.FANOUT)

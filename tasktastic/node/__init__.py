@@ -44,6 +44,7 @@ class NodeDetails:
 async def main(args: NodeArguments) -> int:
     node_details = NodeDetails.generate_with_tags(**args.tags)
 
+    print(f"node ID: {node_details.node_id}")
     if node_details.tags:
         print("tags:")
         for name, value in node_details.tags.items():
@@ -98,7 +99,7 @@ async def node_heartbeat(connection: aio_pika.Connection, node_details: NodeDeta
     print("establishing heartbeat channel...")
     channel = await connection.channel()
 
-    heartbeat_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat, ExchangeType.FANOUT)
+    heartbeat_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat.name, Exchanges.NodeHeartbeat.kind)
 
     print("node heartbeat running...")
     while True:
@@ -121,9 +122,9 @@ async def process_execution_requests(loop: asyncio.AbstractEventLoop, connection
     channel = await connection.channel()
     await channel.set_qos(prefetch_count=1)
 
-    request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ, ExchangeType.FANOUT)
-    request_exchange = await channel.declare_exchange(Exchanges.ExecutionRequest, ExchangeType.FANOUT)
-    response_exchange = await channel.declare_exchange(Exchanges.ExecutionOutcome, ExchangeType.FANOUT)
+    request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ.name, Exchanges.ExecutionDLQ.kind)
+    request_exchange = await channel.declare_exchange(Exchanges.ExecutionRequest.name, Exchanges.ExecutionRequest.kind)
+    response_exchange = await channel.declare_exchange(Exchanges.ExecutionOutcome.name, Exchanges.ExecutionOutcome.kind)
 
     request_queue_message_timeout = 60 * 1000
     request_queue_timeout = int(request_queue_message_timeout * 2.5)

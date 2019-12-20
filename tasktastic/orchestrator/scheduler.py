@@ -6,7 +6,7 @@ import typing
 import uuid
 
 import aio_pika
-from aio_pika import ExchangeType, Message, IncomingMessage
+from aio_pika import Message, IncomingMessage
 
 from tasktastic.common.rmq_entities import Exchanges
 from tasktastic.common.schemas import ExecutionResponse, ExecutionRequest, ExecutionRequestSchema, NodeHeartbeat, \
@@ -70,10 +70,13 @@ class Scheduler:
         self.job_exchange: typing.Optional[aio_pika.Exchange] = None
 
     async def enable_job_execution(self, channel: aio_pika.Channel):
-        self.job_exchange = await channel.declare_exchange(Exchanges.ExecutionRequest, ExchangeType.FANOUT)
+        self.job_exchange = await channel.declare_exchange(
+            Exchanges.ExecutionRequest.name,
+            Exchanges.ExecutionRequest.kind
+        )
 
     async def start_receiving_node_heartbeats(self, channel: aio_pika.Channel) -> asyncio.Future:
-        response_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat, ExchangeType.FANOUT)
+        response_exchange = await channel.declare_exchange(Exchanges.NodeHeartbeat.name, Exchanges.NodeHeartbeat.kind)
         queue = await channel.declare_queue(exclusive=True)
         await queue.bind(response_exchange)
         await queue.consume(self._on_node_heartbeat_received)
@@ -83,13 +86,16 @@ class Scheduler:
         )
 
     async def start_receiving_execution_outcomes(self, channel: aio_pika.Channel):
-        response_exchange = await channel.declare_exchange(Exchanges.ExecutionOutcome, ExchangeType.FANOUT)
+        response_exchange = await channel.declare_exchange(
+            Exchanges.ExecutionOutcome.name,
+            Exchanges.ExecutionOutcome.kind
+        )
         queue = await channel.declare_queue(exclusive=True)
         await queue.bind(response_exchange)
         await queue.consume(self._on_execution_outcome_received)
 
     async def start_receiving_execution_request_dlq(self, channel: aio_pika.Channel):
-        request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ, ExchangeType.FANOUT)
+        request_dlq_exchange = await channel.declare_exchange(Exchanges.ExecutionDLQ.name, Exchanges.ExecutionDLQ.kind)
         queue = await channel.declare_queue(exclusive=True)
         await queue.bind(request_dlq_exchange)
         await queue.consume(self._on_execution_request_dlq_received)
