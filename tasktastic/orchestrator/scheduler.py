@@ -23,6 +23,7 @@ class KnownNode:
     node_id: str
     last_heartbeat: datetime.datetime
     tags: typing.Dict[str, str]
+    outstanding_jobs: typing.List['OngoingExecutionJob']
 
     def time_since_heartbeat(self) -> datetime.timedelta:
         return datetime.datetime.utcnow() - self.last_heartbeat
@@ -109,6 +110,7 @@ class Scheduler:
             for node in self.known_nodes.values()
             if node.matches_tags(user_execution_request.tags)
         ]
+        possible_nodes.sort(key=lambda node: len(node.outstanding_jobs))
 
         if not possible_nodes:
             result.set_exception(SchedulingException(f"no nodes matching request tags"))
@@ -121,6 +123,7 @@ class Scheduler:
             future=result
         )
         self.ongoing_jobs[ongoing_job.request_id] = ongoing_job
+        assigned_node.outstanding_jobs.append(ongoing_job)
 
         execution_request = ExecutionRequest(
             request_id=ongoing_job.request_id,
@@ -132,6 +135,11 @@ class Scheduler:
             retrieve_logs=user_execution_request.retrieve_logs
         )
 
+        print("scheduling job {} on node {} ({} outstanding jobs)".format(
+            execution_request.request_id,
+            assigned_node.node_id,
+            len(assigned_node.outstanding_jobs)
+        ))
         execution_request_json = ExecutionRequestSchema().dumps(execution_request)
         await self.job_exchange.publish(
             message=Message(
@@ -173,14 +181,18 @@ class Scheduler:
         async with message.process():
             heartbeat: NodeHeartbeat = NodeHeartbeatSchema().loads(message.body)
 
-            node = KnownNode(
+            if heartbeat.node_id not in self.known_nodes:
+                print(f"node {heartbeat.node_id} online (as of {heartbeat.timestamp})")
+
+            new_node = KnownNode(
                 node_id=heartbeat.node_id,
                 last_heartbeat=heartbeat.timestamp,
                 tags=heartbeat.tags,
+                outstanding_jobs=[]
             )
 
-            if node.node_id not in self.known_nodes:
-                print(f"node {node.node_id} online (as of {node.last_heartbeat})")
+            node = self.known_nodes.setdefault(heartbeat.node_id, new_node)
+            node.last_heartbeat = heartbeat.timestamp
 
             self.known_nodes[node.node_id] = node
 
@@ -188,20 +200,17 @@ class Scheduler:
         async with message.process():
             response: ExecutionResponse = ExecutionResponseSchema().loads(message.body)
 
-            print(f"execution response: {response.request_id}")
             if response.error:
-                print(f"  error: {response.error}")
-                self._fail_job(response.request_id, f"execution failed with reason: {response.error}")
+                job = self._fail_job(response.request_id, f"execution failed with reason: {response.error}")
+                details = f"(error: {response.error})"
             else:
-                print(f"  status code: {response.exit_status}")
-                print(f"  exit error: {response.exit_error}")
+                job = self._complete_job(response.request_id, response)
+                details = f"(exit status: {response.exit_status}, exit error: {response.exit_error})"
 
-                if response.logs:
-                    print(f"  logs:")
-                    for log_line in response.logs:
-                        print(f"  - {log_line.strip()}")
-
-                self._complete_job(response.request_id, response)
+            print(f"execution response: {response.request_id} {details}")
+            node = self.known_nodes.get(job.id_of_assigned_node)
+            if node:
+                print(f"  node {node.node_id} now has {len(node.outstanding_jobs)} outstanding job")
 
     async def _on_execution_request_dlq_received(self, message: IncomingMessage):
         async with message.process():
@@ -210,15 +219,27 @@ class Scheduler:
             self._fail_job(request.request_id, "job rejected (node failed or message timed out in queue)")
 
     def _complete_job(self, request_id: str, result: ExecutionResponse):
-        job = self.ongoing_jobs.get(request_id)
-        if job is None:
-            return
-        del self.ongoing_jobs[request_id]
+        job = self._remove_job(request_id)
+        if not job:
+            return job
         job.future.set_result(result)
+        return job
 
     def _fail_job(self, request_id: str, reason: str):
-        job = self.ongoing_jobs.get(request_id)
-        if job is None:
-            return
-        del self.ongoing_jobs[request_id]
+        job = self._remove_job(request_id)
+        if not job:
+            return job
         job.future.set_exception(SchedulingException(reason))
+        return job
+
+    def _remove_job(self, request_id):
+        job = self.ongoing_jobs.get(request_id)
+        if not job:
+            return job
+        del self.ongoing_jobs[request_id]
+
+        assigned_node = self.known_nodes.get(job.id_of_assigned_node)
+        if assigned_node is not None and job in assigned_node.outstanding_jobs:
+            assigned_node.outstanding_jobs.remove(job)
+
+        return job
