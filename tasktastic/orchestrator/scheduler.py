@@ -229,24 +229,28 @@ class Scheduler:
         job = self._remove_job(request_id)
         if not job:
             return job
-        job.future.set_result(result)
+        if not job.future.cancelled():
+            job.future.set_result(result)
         return job
 
     def _fail_job(self, request_id: str, reason: str):
         job = self._remove_job(request_id)
         if not job:
             return job
-        job.future.set_exception(SchedulingException(reason))
+        if not job.future.cancelled():
+            job.future.set_exception(SchedulingException(reason))
         return job
 
     def _remove_job(self, request_id):
-        job = self.ongoing_jobs.get(request_id)
+        job = self.ongoing_jobs.pop(request_id, None)
         if not job:
             return job
-        del self.ongoing_jobs[request_id]
 
         assigned_node = self.known_nodes.get(job.id_of_assigned_node)
-        if assigned_node is not None and job in assigned_node.outstanding_jobs:
-            assigned_node.outstanding_jobs.remove(job)
+        if assigned_node is not None:
+            try:
+                assigned_node.outstanding_jobs.remove(job)
+            except ValueError:
+                pass
 
         return job
