@@ -207,10 +207,11 @@ class Scheduler:
                 job = self._complete_job(response.request_id, response)
                 details = f"(exit status: {response.exit_status}, exit error: {response.exit_error})"
 
-            print(f"execution response: {response.request_id} {details}")
-            node = self.known_nodes.get(job.id_of_assigned_node)
-            if node:
-                print(f"  node {node.node_id} now has {len(node.outstanding_jobs)} outstanding job")
+            if job:
+                print(f"execution response: {response.request_id} {details}")
+                node = self.known_nodes.get(job.id_of_assigned_node)
+                if node:
+                    print(f"  node {node.node_id} now has {len(node.outstanding_jobs)} outstanding job")
 
     async def _on_execution_request_dlq_received(self, message: IncomingMessage):
         async with message.process():
