@@ -27,6 +27,14 @@ class KnownNode:
     def time_since_heartbeat(self) -> datetime.timedelta:
         return datetime.datetime.utcnow() - self.last_heartbeat
 
+    def matches_tags(self, tags: typing.Dict[str, str]) -> bool:
+        for name, value in tags.items():
+            if name not in self.tags:
+                return False
+            if self.tags[name] != value:
+                return False
+        return True
+
 
 @dataclasses.dataclass
 class OngoingExecutionJob:
@@ -92,10 +100,18 @@ class Scheduler:
             result.set_exception(SchedulingException("execution jobs are not enabled"))
             return result
 
-        possible_nodes = list(self.known_nodes.values())
+        if not self.known_nodes:
+            result.set_exception(SchedulingException(f"no available nodes"))
+            return result
+
+        possible_nodes = [
+            node
+            for node in self.known_nodes.values()
+            if node.matches_tags(user_execution_request.tags)
+        ]
 
         if not possible_nodes:
-            result.set_exception(SchedulingException(f"no available nodes, or none matching request tags"))
+            result.set_exception(SchedulingException(f"no nodes matching request tags"))
             return result
 
         assigned_node: KnownNode = random.choice(possible_nodes)

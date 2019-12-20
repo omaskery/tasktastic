@@ -24,5 +24,17 @@ class ExecutionRequest:
     outputs: typing.List[str] = field(default=list)
     retrieve_logs: bool = field(default=False)
 
+    @marshmallow.pre_load(pass_many=False)
+    def stringify_incoming_tag_values(self, value, *_args, **_kwargs):
+        if not isinstance(value, dict):
+            return value
+        if 'tags' not in value:
+            return value
+        if not isinstance(value['tags'], dict):
+            return value
+        for tag_name, tag_value in value['tags'].items():
+            value['tags'][tag_name] = str(tag_value)
+        return value
+
 
 ExecutionRequestSchema = marshmallow_dataclass.class_schema(ExecutionRequest)

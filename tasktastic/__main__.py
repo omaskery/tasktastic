@@ -1,6 +1,9 @@
 import argparse
 import asyncio
+import string
 import sys
+
+import typing
 
 import tasktastic
 
@@ -16,6 +19,10 @@ async def main(event_loop: asyncio.AbstractEventLoop):
     node_parser = subparsers.add_parser('node')
     node_parser.set_defaults(entry_point=node_entry_point)
     node_parser.add_argument("orchestrator", help='address of the orchestrator node')
+    node_parser.add_argument(
+        '--tag', '-t', action='append', default=[], type=validate_tag_argument, dest='tags',
+        help='add tag to the node in form TAG_NAME=TAG_VALUE'
+    )
 
     orchestrator_parser = subparsers.add_parser('orchestrator')
     orchestrator_parser.set_defaults(entry_point=orchestrator_entry_point)
@@ -24,6 +31,32 @@ async def main(event_loop: asyncio.AbstractEventLoop):
     args = parser.parse_args()
 
     sys.exit(await args.entry_point(event_loop, args, parser))
+
+
+def validate_tag_argument(argument: str) -> typing.Tuple[str, str]:
+    parts = argument.split('=', maxsplit=1)
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError("argument must be in the format TAG_NAME=TAG_VALUE")
+
+    name, value = parts
+
+    return (
+        validate_slug_text_argument('tag name', name),
+        validate_slug_text_argument('tag value', value)
+    )
+
+
+def validate_slug_text_argument(name: str, text: str) -> str:
+    valid_slug_characters = string.ascii_letters + string.digits + '_-.~'
+    valid = all(
+        character in valid_slug_characters
+        for character in text
+    )
+    if not valid:
+        raise argparse.ArgumentTypeError(
+            f"{name} '{text}' can only contain letters, digits, hyphen, period, underscore and tilde"
+        )
+    return text
 
 
 async def unknown_entry_point(_event_loop, _args, parser: argparse.ArgumentParser) -> int:
@@ -35,6 +68,7 @@ async def node_entry_point(event_loop, args, _parser: argparse.ArgumentParser) -
     return await tasktastic.node.main(tasktastic.node.NodeArguments(
         orchestrator_uri=args.orchestrator,
         loop=event_loop,
+        tags=dict(args.tags)
     ))
 
 

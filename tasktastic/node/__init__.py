@@ -25,6 +25,7 @@ from tasktastic.common.schemas import ExecutionRequestSchema, ExecutionRequest, 
 class NodeArguments:
     orchestrator_uri: str
     loop: asyncio.AbstractEventLoop
+    tags: typing.Dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -41,11 +42,12 @@ class NodeDetails:
 
 
 async def main(args: NodeArguments) -> int:
-    print(f"node invoked with args: {args}")
+    node_details = NodeDetails.generate_with_tags(**args.tags)
 
-    node_details = NodeDetails.generate_with_tags(
-        coolness="off the charts"
-    )
+    if node_details.tags:
+        print("tags:")
+        for name, value in node_details.tags.items():
+            print(f"  - {name} = {value}")
 
     docker_client = docker.from_env()
     print("checking connection to docker host...")

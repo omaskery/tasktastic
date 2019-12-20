@@ -18,8 +18,6 @@ class OrchestratorArguments:
 
 
 async def main(args: OrchestratorArguments) -> int:
-    print(f"orchestrator invoked with args: {args}")
-
     print("connecting to message broker...")
     connection: aio_pika.Connection = await aio_pika.connect_robust(
         args.rabbitmq_uri,
@@ -87,7 +85,8 @@ async def create_http_api(scheduler: 'Scheduler') -> web.Application:
         execution_request_json = await request.json()
         try:
             execution_request = http_schemas.ExecutionRequestSchema().load(execution_request_json)
-        except marshmallow.ValidationError:
+        except marshmallow.ValidationError as error:
+            print(f"invalid execution request received: {error}")
             return web.Response(status=400, text="invalid execution request")
 
         execution_response_future = await scheduler.submit_execution_request(execution_request)
@@ -103,5 +102,3 @@ async def create_http_api(scheduler: 'Scheduler') -> web.Application:
     app.add_routes(routes)
 
     return app
-
-
